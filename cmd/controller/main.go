@@ -34,4 +34,20 @@ func main() {
 			deployment.Status.Replicas,
 		)
 	}
+
+	fmt.Println("Scaling sample-app...")
+
+	err = k8s.ScaleDeployment(
+		context.Background(),
+		clientset,
+		"go-k8s-poc",
+		"sample-app",
+		3,
+	)
+	if err != nil {
+		log.Fatalf("failed to scale deployment: %v", err)
+	}
+
+	fmt.Println("Scale request completed")
+
 }
