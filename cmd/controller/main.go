@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -35,19 +36,24 @@ func main() {
 		)
 	}
 
-	fmt.Println("Reconciling sample-app...")
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
 
-	err = k8s.ReconcileDeployment(
-		context.Background(),
-		clientset,
-		"go-k8s-poc",
-		"sample-app",
-		3,
-	)
-	if err != nil {
-		log.Fatalf("failed to reconcile deployment: %v", err)
+	fmt.Println("Controller started")
+
+	for {
+		err := k8s.ReconcileDeployment(
+			context.Background(),
+			clientset,
+			"go-k8s-poc",
+			"sample-app",
+			3,
+		)
+		if err != nil {
+			log.Printf("failed to reconcile deployment: %v", err)
+		}
+
+		<-ticker.C
 	}
-
-	fmt.Println("Reconcile completed")
 
 }
