@@ -35,9 +35,9 @@ func main() {
 		)
 	}
 
-	fmt.Println("Scaling sample-app...")
+	fmt.Println("Reconciling sample-app...")
 
-	err = k8s.ScaleDeployment(
+	err = k8s.ReconcileDeployment(
 		context.Background(),
 		clientset,
 		"go-k8s-poc",
@@ -45,9 +45,9 @@ func main() {
 		3,
 	)
 	if err != nil {
-		log.Fatalf("failed to scale deployment: %v", err)
+		log.Fatalf("failed to reconcile deployment: %v", err)
 	}
 
-	fmt.Println("Scale request completed")
+	fmt.Println("Reconcile completed")
 
 }

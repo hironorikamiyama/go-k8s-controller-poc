@@ -68,3 +68,42 @@ func ScaleDeployment(
 
 	return nil
 }
+
+func ReconcileDeployment(
+	ctx context.Context,
+	clientset *kubernetes.Clientset,
+	namespace string,
+	name string,
+	desiredReplicas int32,
+) error {
+	scale, err := clientset.
+		AppsV1().
+		Deployments(namespace).
+		GetScale(ctx, name, metav1.GetOptions{})
+	if err != nil {
+		return fmt.Errorf("failed to get deployment scale: %w", err)
+	}
+
+	currentReplicas := scale.Spec.Replicas
+
+	fmt.Printf(
+		"Reconciling deployment %s/%s: current=%d desired=%d\n",
+		namespace,
+		name,
+		currentReplicas,
+		desiredReplicas,
+	)
+
+	if currentReplicas == desiredReplicas {
+		fmt.Println("No scaling required")
+		return nil
+	}
+
+	return ScaleDeployment(
+		ctx,
+		clientset,
+		namespace,
+		name,
+		desiredReplicas,
+	)
+}
