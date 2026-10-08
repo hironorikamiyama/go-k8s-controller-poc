@@ -2,59 +2,72 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	controller "github.com/hironorikamiyama/go-k8s-controller-poc/internal/controller"
+	"github.com/hironorikamiyama/go-k8s-controller-poc/internal/config"
+	"github.com/hironorikamiyama/go-k8s-controller-poc/internal/controller"
 	k8s "github.com/hironorikamiyama/go-k8s-controller-poc/internal/kubernetes"
 )
 
 func main() {
-	clientset, err := k8s.NewClient()
+	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("failed to initialize kubernetes client: %v", err)
+		log.Fatalf("invalid configuration: %v", err)
 	}
 
-	deployments, err := clientset.
-		AppsV1().
-		Deployments("").
-		List(context.Background(), metav1.ListOptions{})
+	ctx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+	defer stop()
+
+	client, err := k8s.NewClient()
 	if err != nil {
-		log.Fatalf("failed to list deployments: %v", err)
+		log.Fatalf("failed to create Kubernetes client: %v", err)
 	}
 
-	fmt.Printf("Found %d deployment(s)\n", len(deployments.Items))
+	log.Printf(
+		"controller started: namespace=%s deployment=%s desired=%d interval=%s",
+		cfg.Namespace,
+		cfg.DeploymentName,
+		cfg.DesiredReplicas,
+		cfg.PollInterval,
+	)
 
-	for _, deployment := range deployments.Items {
-		fmt.Printf(
-			"namespace=%s name=%s replicas=%d\n",
-			deployment.Namespace,
-			deployment.Name,
-			deployment.Status.Replicas,
-		)
-	}
-
-	ticker := time.NewTicker(5 * time.Second)
-	defer ticker.Stop()
-
-	fmt.Println("Controller started")
-
-	for {
+	// 起動直後に一度Reconcileする。
+	reconcile := func() {
 		err := controller.ReconcileDeployment(
-			context.Background(),
-			clientset,
-			"go-k8s-poc",
-			"sample-app",
-			3,
+			ctx,
+			client,
+			cfg.Namespace,
+			cfg.DeploymentName,
+			cfg.DesiredReplicas,
 		)
 		if err != nil {
-			log.Printf("failed to reconcile deployment: %v", err)
+			if ctx.Err() == nil {
+				log.Printf("reconcile failed: %v", err)
+			}
 		}
-
-		<-ticker.C
 	}
 
+	reconcile()
+
+	ticker := time.NewTicker(cfg.PollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("shutdown signal received; controller stopped")
+			return
+
+		case <-ticker.C:
+			reconcile()
+		}
+	}
 }
