@@ -35,7 +35,7 @@ func NewClient() (*kubernetes.Clientset, error) {
 
 func ScaleDeployment(
 	ctx context.Context,
-	clientset *kubernetes.Clientset,
+	clientset kubernetes.Interface,
 	namespace string,
 	name string,
 	replicas int32,
@@ -71,7 +71,7 @@ func ScaleDeployment(
 
 func ReconcileDeployment(
 	ctx context.Context,
-	clientset *kubernetes.Clientset,
+	clientset kubernetes.Interface,
 	namespace string,
 	name string,
 	desiredReplicas int32,
