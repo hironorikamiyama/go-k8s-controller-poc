@@ -8,6 +8,7 @@ import (
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
+	controller "github.com/hironorikamiyama/go-k8s-controller-poc/internal/controller"
 	k8s "github.com/hironorikamiyama/go-k8s-controller-poc/internal/kubernetes"
 )
 
@@ -42,7 +43,7 @@ func main() {
 	fmt.Println("Controller started")
 
 	for {
-		err := k8s.ReconcileDeployment(
+		err := controller.ReconcileDeployment(
 			context.Background(),
 			clientset,
 			"go-k8s-poc",
