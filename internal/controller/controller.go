@@ -4,9 +4,8 @@ import (
 	"context"
 	"fmt"
 
-	"k8s.io/client-go/kubernetes"
-
 	k8s "github.com/hironorikamiyama/go-k8s-controller-poc/internal/kubernetes"
+	"k8s.io/client-go/kubernetes"
 )
 
 func ReconcileDeployment(
@@ -15,10 +14,12 @@ func ReconcileDeployment(
 	namespace, name string,
 	desired int32,
 ) error {
-	current, err := k8s.GetReplicas(ctx, client, namespace, name)
+	scale, err := k8s.GetScale(ctx, client, namespace, name)
 	if err != nil {
 		return err
 	}
+
+	current := scale.Spec.Replicas
 
 	fmt.Printf(
 		"Reconciling deployment %s/%s: current=%d desired=%d\n",
@@ -35,5 +36,12 @@ func ReconcileDeployment(
 		namespace, name, current, desired,
 	)
 
-	return k8s.ScaleDeployment(ctx, client, namespace, name, desired)
+	return k8s.UpdateReplicas(
+		ctx,
+		client,
+		namespace,
+		name,
+		scale,
+		desired,
+	)
 }
