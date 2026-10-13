@@ -36,41 +36,8 @@ func WatchDeployment(
 		Deployments().
 		Informer()
 
-	enqueue := func(obj interface{}) {
-		deployment, ok := obj.(*appsv1.Deployment)
-		if !ok {
-			return
-		}
-
-		key, err := cache.MetaNamespaceKeyFunc(deployment)
-		if err != nil {
-			log.Printf("[Informer] key generation failed: %v", err)
-			return
-		}
-
-		queue.Add(key)
-		log.Printf("[Informer] enqueued %s", key)
-	}
-
 	_, err := deploymentInformer.AddEventHandler(
-		cache.ResourceEventHandlerFuncs{
-			AddFunc: func(obj interface{}) {
-				enqueue(obj)
-			},
-			UpdateFunc: func(oldObj, newObj interface{}) {
-				oldDeployment, oldOK := oldObj.(*appsv1.Deployment)
-				newDeployment, newOK := newObj.(*appsv1.Deployment)
-				if !oldOK || !newOK {
-					return
-				}
-
-				if replicas(oldDeployment) == replicas(newDeployment) {
-					return
-				}
-
-				enqueue(newDeployment)
-			},
-		},
+		newDeploymentEventHandler(namespace, deploymentName, queue),
 	)
 	if err != nil {
 		return fmt.Errorf("add deployment event handler: %w", err)
@@ -89,6 +56,53 @@ func WatchDeployment(
 
 	<-ctx.Done()
 	return nil
+}
+
+func newDeploymentEventHandler(
+	namespace string,
+	deploymentName string,
+	queue workqueue.TypedInterface[string],
+) cache.ResourceEventHandler {
+	enqueue := func(obj interface{}) {
+		deployment, ok := obj.(*appsv1.Deployment)
+		if !ok {
+			return
+		}
+
+		// FieldSelectorに加えて、イベント側でも対象を検証する。
+		if deployment.Namespace != namespace ||
+			deployment.Name != deploymentName {
+			return
+		}
+
+		key, err := cache.MetaNamespaceKeyFunc(deployment)
+		if err != nil {
+			log.Printf("[Informer] key generation failed: %v", err)
+			return
+		}
+
+		queue.Add(key)
+		log.Printf("[Informer] enqueued %s", key)
+	}
+
+	return cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			enqueue(obj)
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldDeployment, oldOK := oldObj.(*appsv1.Deployment)
+			newDeployment, newOK := newObj.(*appsv1.Deployment)
+			if !oldOK || !newOK {
+				return
+			}
+
+			if replicas(oldDeployment) == replicas(newDeployment) {
+				return
+			}
+
+			enqueue(newDeployment)
+		},
+	}
 }
 
 func replicas(deployment *appsv1.Deployment) int32 {

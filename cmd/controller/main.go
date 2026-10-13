@@ -2,16 +2,16 @@ package main
 
 import (
 	"context"
-	"log"
-	"os"
-	"os/signal"
-	"syscall"
-
 	"github.com/hironorikamiyama/go-k8s-controller-poc/internal/config"
 	"github.com/hironorikamiyama/go-k8s-controller-poc/internal/informer"
 	k8s "github.com/hironorikamiyama/go-k8s-controller-poc/internal/kubernetes"
 	"github.com/hironorikamiyama/go-k8s-controller-poc/internal/worker"
 	"k8s.io/client-go/util/workqueue"
+	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 )
 
 func main() {
@@ -32,7 +32,15 @@ func main() {
 		log.Fatalf("failed to create Kubernetes client: %v", err)
 	}
 
-	queue := workqueue.NewTyped[string]()
+	queue := workqueue.NewTypedRateLimitingQueueWithConfig(
+		workqueue.NewTypedItemExponentialFailureRateLimiter[string](
+			1*time.Second,
+			30*time.Second,
+		),
+		workqueue.TypedRateLimitingQueueConfig[string]{
+			Name: "deployment-controller",
+		},
+	)
 
 	log.Printf(
 		"controller started: namespace=%s deployment=%s desired=%d mode=event-driven",
