@@ -6,17 +6,18 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/hironorikamiyama/go-k8s-controller-poc/internal/config"
-	"github.com/hironorikamiyama/go-k8s-controller-poc/internal/controller"
+	"github.com/hironorikamiyama/go-k8s-controller-poc/internal/informer"
 	k8s "github.com/hironorikamiyama/go-k8s-controller-poc/internal/kubernetes"
+	"github.com/hironorikamiyama/go-k8s-controller-poc/internal/worker"
+	"k8s.io/client-go/util/workqueue"
 )
 
 func main() {
 	cfg, err := config.Load()
 	if err != nil {
-		log.Fatalf("invalid configuration: %v", err)
+		log.Fatalf("invalid config: %v", err)
 	}
 
 	ctx, stop := signal.NotifyContext(
@@ -31,43 +32,57 @@ func main() {
 		log.Fatalf("failed to create Kubernetes client: %v", err)
 	}
 
+	queue := workqueue.NewTyped[string]()
+
 	log.Printf(
-		"controller started: namespace=%s deployment=%s desired=%d interval=%s",
+		"controller started: namespace=%s deployment=%s desired=%d mode=event-driven",
 		cfg.Namespace,
 		cfg.DeploymentName,
 		cfg.DesiredReplicas,
-		cfg.PollInterval,
 	)
 
-	// 起動直後に一度Reconcileする。
-	reconcile := func() {
-		err := controller.ReconcileDeployment(
+	// WorkerはInformerより先に起動してよい。
+	// queue.Get() はイベントが届くまで待機する。
+	workerDone := make(chan struct{})
+	go func() {
+		defer close(workerDone)
+
+		worker.Run(
 			ctx,
 			client,
+			queue,
 			cfg.Namespace,
 			cfg.DeploymentName,
 			cfg.DesiredReplicas,
 		)
+	}()
+
+	// Informerは同期完了まで待機し、以降はイベントを監視する。
+	informerDone := make(chan error, 1)
+	go func() {
+		informerDone <- informer.WatchDeployment(
+			ctx,
+			client,
+			cfg.Namespace,
+			cfg.DeploymentName,
+			queue,
+		)
+	}()
+
+	select {
+	case <-ctx.Done():
+		log.Println("shutdown signal received")
+	case err := <-informerDone:
 		if err != nil {
-			if ctx.Err() == nil {
-				log.Printf("reconcile failed: %v", err)
-			}
+			log.Printf("informer stopped with error: %v", err)
+		} else {
+			log.Println("informer stopped")
 		}
 	}
 
-	reconcile()
+	stop()
+	queue.ShutDown()
+	<-workerDone
 
-	ticker := time.NewTicker(cfg.PollInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("shutdown signal received; controller stopped")
-			return
-
-		case <-ticker.C:
-			reconcile()
-		}
-	}
+	log.Println("controller stopped")
 }
