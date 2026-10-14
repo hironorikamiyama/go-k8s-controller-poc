@@ -1,3 +1,133 @@
+
+# Go Kubernetes Controller PoC
+
+A minimal event-driven Kubernetes controller implemented in Go using `client-go`.
+
+This project demonstrates the fundamental architecture of a Kubernetes controller, including SharedInformer, Workqueue, reconciliation, retry handling, and graceful shutdown.
+
+The controller watches a single Kubernetes Deployment and automatically restores its desired replica count when it is changed.
+
+## Project Goals
+
+- Understand Kubernetes controller architecture through implementation.
+- Replace periodic polling with event-driven reconciliation.
+- Use SharedInformer and typed Workqueue to process Deployment events.
+- Implement retry handling with exponential backoff.
+- Verify controller behavior using fake Kubernetes clients and unit tests.
+- Demonstrate practical Go and Kubernetes development skills.
+
+This project is intended for learning and technical demonstration, not production use.
+
+## Getting Started
+
+### Prerequisites
+
+- Go
+- Docker
+- kind
+- kubectl
+- A working local Kubernetes cluster
+
+### Build
+
+```bash
+go mod download
+go build -o bin/controller ./cmd/controller
+```
+
+### Prepare a Kubernetes Deployment
+
+Create a namespace:
+
+```bash
+kubectl create namespace go-k8s-poc
+```
+
+Create a sample Deployment:
+
+```bash
+kubectl create deployment sample-app \
+  --image=nginx \
+  -n go-k8s-poc
+```
+
+If the namespace or Deployment already exists, skip its creation.
+
+### Run the Controller
+
+Make sure your current Kubernetes context points to the intended cluster.
+
+```bash
+kubectl config current-context
+```
+
+Start the controller:
+
+```bash
+NAMESPACE=go-k8s-poc \
+DEPLOYMENT_NAME=sample-app \
+DESIRED_REPLICAS=3 \
+./bin/controller
+```
+
+The controller uses the current Kubernetes client configuration to access the cluster.
+
+### Verify Automatic Reconciliation
+
+In another terminal, change the Deployment's replica count:
+
+```bash
+kubectl scale deployment sample-app \
+  -n go-k8s-poc \
+  --replicas=1
+```
+
+The controller should detect the change and restore the desired replica count to 3.
+
+```bash
+kubectl get deployment sample-app -n go-k8s-poc
+```
+
+Stop the controller with `Ctrl+C`.
+
+## Project Structure
+
+```text
+cmd/
+  controller/
+    main.go
+
+internal/
+  config/
+    config.go
+    config_test.go
+
+  controller/
+    controller.go
+    controller_test.go
+
+  informer/
+    deployment.go
+    deployment_test.go
+
+  kubernetes/
+    client.go
+    scale.go
+
+  worker/
+    worker.go
+    worker_test.go
+```
+
+Responsibilities:
+
+- `cmd/controller`: Application startup, dependency wiring, and shutdown.
+- `internal/config`: Environment-variable configuration and validation.
+- `internal/controller`: Reconciliation logic.
+- `internal/informer`: Deployment event monitoring and queue registration.
+- `internal/kubernetes`: Kubernetes client creation and scale operations.
+- `internal/worker`: Queue processing, retries, and error handling.
+
 ## Architecture
 
 The controller uses an event-driven reconciliation architecture built with Kubernetes `client-go`.
