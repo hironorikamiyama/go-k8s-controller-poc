@@ -124,6 +124,34 @@ func stopWorker(
 	}
 }
 
+func waitForRetryReset(
+	t *testing.T,
+	queue workqueue.TypedRateLimitingInterface[string],
+	key string,
+) {
+	t.Helper()
+
+	deadline := time.After(3 * time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if queue.NumRequeues(key) == 0 {
+			return
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf(
+				"timeout waiting for retry history reset: key=%s requeues=%d",
+				key,
+				queue.NumRequeues(key),
+			)
+		case <-ticker.C:
+		}
+	}
+}
+
 func TestWorkerSuccess(t *testing.T) {
 	client := newTestClient()
 	queue := newTestQueue()
@@ -217,10 +245,12 @@ func TestWorkerResetsRetriesAfterRecovery(t *testing.T) {
 	}
 }
 
-func TestWorkerStopsAfterMaxRetries(t *testing.T) {
+func TestWorkerSchedulesRecoveryAfterMaxRetries(t *testing.T) {
 	client := newTestClient()
 	queue := newTestQueue()
-	ctx := context.Background()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	var calls atomic.Int32
 
@@ -233,29 +263,39 @@ func TestWorkerStopsAfterMaxRetries(t *testing.T) {
 		},
 	)
 
-	done := runTestWorker(t, ctx, client, queue)
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		run(
+			ctx,
+			client,
+			queue,
+			testNamespace,
+			testDeployment,
+			3,
+			20*time.Millisecond,
+		)
+	}()
 
 	queue.Add(testKey)
+
+	// First cycle: initial attempt + MaxRetries retries.
 	waitForCount(t, &calls, int32(MaxRetries+1))
+	waitForRetryReset(t, queue, testKey)
 
-	// 最終失敗の処理が完了するまで待機する。
-	deadline := time.After(3 * time.Second)
-	for queue.NumRequeues(testKey) != 0 {
-		select {
-		case <-deadline:
-			t.Fatal("retry history was not cleared")
-		default:
-			time.Sleep(time.Millisecond)
-		}
-	}
+	// The recovery delay should trigger another reconciliation.
+	waitForCount(t, &calls, int32(MaxRetries+2))
 
+	cancel()
 	stopWorker(t, queue, done)
 
-	if got := calls.Load(); got != int32(MaxRetries+1) {
+	if got := calls.Load(); got < int32(MaxRetries+2) {
 		t.Fatalf(
-			"expected %d calls, got %d",
-			MaxRetries+1,
+			"recovery was not scheduled: calls=%d, want at least %d",
 			got,
+			MaxRetries+2,
 		)
 	}
 }
@@ -268,4 +308,64 @@ func TestWorkerShutdown(t *testing.T) {
 	done := runTestWorker(t, ctx, client, queue)
 
 	stopWorker(t, queue, done)
+}
+
+func TestWorkerRecoversAfterMaxRetries(t *testing.T) {
+	client := newTestClient()
+	queue := newTestQueue()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var calls atomic.Int32
+
+	client.PrependReactor(
+		"get",
+		"deployments",
+		func(action ktesting.Action) (bool, runtime.Object, error) {
+			if calls.Add(1) <= int32(MaxRetries+1) {
+				return true, nil, errors.New("persistent API failure")
+			}
+			return false, nil, nil
+		},
+	)
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+
+		run(
+			ctx,
+			client,
+			queue,
+			testNamespace,
+			testDeployment,
+			3,
+			10*time.Millisecond,
+		)
+	}()
+
+	queue.Add(testKey)
+
+	// Wait until the recovery reconciliation reaches the API.
+	waitForCount(t, &calls, int32(MaxRetries+2))
+
+	cancel()
+	stopWorker(t, queue, done)
+
+	if got := calls.Load(); got != int32(MaxRetries+2) {
+		t.Fatalf(
+			"API calls=%d, want=%d",
+			got,
+			MaxRetries+2,
+		)
+	}
+
+	if got := queue.NumRequeues(testKey); got != 0 {
+		t.Fatalf(
+			"retry history was not reset after recovery: got=%d",
+			got,
+		)
+	}
 }

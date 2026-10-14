@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"log"
+	"time"
 
 	"github.com/hironorikamiyama/go-k8s-controller-poc/internal/controller"
 	"k8s.io/client-go/kubernetes"
@@ -10,15 +11,39 @@ import (
 	"k8s.io/client-go/util/workqueue"
 )
 
-const MaxRetries = 5
+const (
+	MaxRetries    = 5
+	RecoveryDelay = 60 * time.Second
+)
 
+// Run starts the worker with the default recovery delay.
 func Run(
 	ctx context.Context,
 	client kubernetes.Interface,
 	queue workqueue.TypedRateLimitingInterface[string],
-	namespace string,
-	deploymentName string,
+	namespace, deploymentName string,
 	desiredReplicas int32,
+) {
+	run(
+		ctx,
+		client,
+		queue,
+		namespace,
+		deploymentName,
+		desiredReplicas,
+		RecoveryDelay,
+	)
+}
+
+// run processes queued Deployment keys.
+// recoveryDelay is configurable for deterministic unit tests.
+func run(
+	ctx context.Context,
+	client kubernetes.Interface,
+	queue workqueue.TypedRateLimitingInterface[string],
+	namespace, deploymentName string,
+	desiredReplicas int32,
+	recoveryDelay time.Duration,
 ) {
 	for {
 		key, shutdown := queue.Get()
@@ -69,11 +94,17 @@ func Run(
 
 			if queue.NumRequeues(key) >= MaxRetries {
 				log.Printf(
-					"[Worker] max retries exceeded: key=%s err=%v",
+					"[Worker] max retries exceeded: key=%s; recovery scheduled after %s: err=%v",
 					key,
+					recoveryDelay,
 					err,
 				)
+
+				// Reset the exponential backoff history.
 				queue.Forget(key)
+
+				// Retry after a longer recovery delay.
+				queue.AddAfter(key, recoveryDelay)
 				return
 			}
 

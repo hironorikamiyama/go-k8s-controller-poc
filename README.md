@@ -216,6 +216,30 @@ If the maximum retry count is exceeded, the error is logged and the key is forgo
 
 The controller does not currently implement a periodic resynchronization mechanism to recover keys after the retry limit is exceeded.
 
+### Recovery After Maximum Retries
+
+The worker supports automatic recovery from prolonged Kubernetes API failures.
+
+- Failed reconciliation attempts use exponential backoff.
+- After five rate-limited retries, the retry history is reset.
+- The Deployment key is scheduled again after a 60-second recovery delay.
+- If the API remains unavailable, another retry cycle begins.
+- Once the API recovers, reconciliation resumes normally.
+
+The recovery delay is configurable internally for unit testing.
+Production execution uses a fixed 60-second delay.
+
+Delayed queue entries are maintained in memory and are not persisted
+across controller restarts.
+
+Unit tests cover:
+- Transient API failures
+- Retry history reset
+- Recovery scheduling after maximum retries
+- Persistent API failures across retry cycles
+- Successful reconciliation after API recovery
+- Worker shutdown
+
 ## Graceful Shutdown
 
 The controller handles SIGINT and SIGTERM using `signal.NotifyContext()`.
