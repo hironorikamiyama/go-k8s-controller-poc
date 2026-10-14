@@ -1,0 +1,9 @@
+
+.git
+.github
+bin/
+*.log
+*.test
+coverage.out
+README.md
+docs/

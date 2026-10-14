@@ -70,7 +70,7 @@ DESIRED_REPLICAS=3 \
 ./bin/controller
 ```
 
-The controller uses the current Kubernetes client configuration to access the cluster.
+When running locally, the controller uses KUBECONFIG or ~/.kube/config. Inside Kubernetes, it uses InClusterConfig and the Pod's ServiceAccount.
 
 ### Verify Automatic Reconciliation
 
@@ -180,7 +180,7 @@ DESIRED_REPLICAS=3 \
 ./bin/controller
 ```
 
-The controller uses the current Kubernetes client configuration to connect to the cluster.
+When running locally, the controller uses KUBECONFIG or ~/.kube/config. Inside Kubernetes, it uses InClusterConfig and the Pod's ServiceAccount.
 
 ## Event-Driven Reconciliation
 
@@ -211,10 +211,6 @@ The controller uses a typed rate-limiting Workqueue with exponential backoff.
 If reconciliation fails, the Worker schedules a retry with exponential backoff.
 
 After successful reconciliation, retry history is cleared.
-
-If the maximum retry count is exceeded, the error is logged and the key is forgotten. Processing can resume if a subsequent event enqueues the key again.
-
-The controller does not currently implement a periodic resynchronization mechanism to recover keys after the retry limit is exceeded.
 
 ### Recovery After Maximum Retries
 
@@ -287,7 +283,7 @@ The test suite covers:
 |---|---|
 | Configuration | 11 subtests covering environment-variable parsing and validation |
 | Reconciliation | 6 subtests covering scale comparison, API interactions and error handling |
-| Worker | 5 tests covering successful reconciliation, retry, recovery, retry exhaustion and shutdown |
+| Worker | 6 tests covering successful reconciliation, retry, recovery, retry exhaustion and shutdown |
 | Informer | 8 event-handler subtests plus 1 initial-event/shutdown test |
 
 The tests use fake Kubernetes clients and in-memory Workqueues to verify behavior without requiring a running Kubernetes cluster.
@@ -320,20 +316,167 @@ kubectl get deployment sample-app -n go-k8s-poc
 
 The expected desired replica count is 3. Pod readiness may take additional time.
 
+## Containerized Deployment (Phase 4)
+
+The controller can run as a Kubernetes Deployment in a kind cluster.
+
+### Container Image
+
+The Dockerfile uses a multi-stage build:
+
+- Build stage: Go 1.26
+- Runtime stage: Distroless static Debian 12 (nonroot)
+- CGO disabled
+- Stripped Go binary
+- No shell or package manager in the runtime image
+
+Build the image:
+
+```bash
+docker build -t go-k8s-controller:v0.1.0 .
+```
+
+The Dockerfile and `.dockerignore` are included in this repository.
+
+### Kubernetes Authentication
+
+The Kubernetes client supports two execution environments:
+
+| Environment | Configuration |
+|---|---|
+| Local execution | `KUBECONFIG` or `~/.kube/config` |
+| Kubernetes Pod | `rest.InClusterConfig()` |
+
+The Pod authenticates using its ServiceAccount.
+
+### RBAC
+
+`deploy/rbac.yaml` defines:
+
+- ServiceAccount: `go-k8s-controller`
+- Role: `go-k8s-controller`
+- RoleBinding: `go-k8s-controller`
+
+The Role is scoped to the `go-k8s-poc` namespace.
+
+| Resource | Allowed verbs |
+|---|---|
+| `deployments.apps` | `get`, `list`, `watch` |
+| `deployments.apps/scale` | `get`, `update` |
+
+Deployment deletion is not granted by this Role.
+
+### Deploy to kind
+
+Make sure the target context is correct:
+
+```bash
+kubectl config current-context
+```
+
+For the verified environment, the context is `kind-go-k8s-poc`.
+
+Prepare the namespace and sample Deployment using the Getting Started instructions if they do not already exist.
+
+Apply the RBAC configuration:
+
+```bash
+kubectl apply -f deploy/rbac.yaml
+```
+
+Load the locally built image into kind:
+
+```bash
+kind load docker-image go-k8s-controller:v0.1.0 --name go-k8s-poc
+```
+
+Deploy the controller:
+
+```bash
+kubectl apply -f deploy/controller.yaml
+```
+
+Wait for rollout:
+
+```bash
+kubectl rollout status deployment/go-k8s-controller   -n go-k8s-poc --timeout=120s
+```
+
+Check Pod status and logs:
+
+```bash
+kubectl get pods -n go-k8s-poc
+
+kubectl logs -n go-k8s-poc   deployment/go-k8s-controller --tail=100
+```
+
+The Deployment uses one controller replica and targets `sample-app` with `DESIRED_REPLICAS=3`.
+
+The Pod security settings include:
+
+- Non-root UID/GID 65532
+- `runAsNonRoot: true`
+- RuntimeDefault seccomp profile
+- Read-only root filesystem
+- Privilege escalation disabled
+- Linux capabilities dropped
+
+### In-Cluster Manual Verification
+
+On October 14, 2026, the controller was deployed successfully to the `go-k8s-poc` kind cluster.
+
+The controller Pod reached `1/1 Running`, and the rollout completed successfully.
+
+The following command intentionally changed the target Deployment to one replica:
+
+```bash
+kubectl scale deployment/sample-app   -n go-k8s-poc --replicas=1
+```
+
+Observed controller logs:
+
+```text
+[Informer] enqueued go-k8s-poc/sample-app
+[Worker] reconciling go-k8s-poc/sample-app attempt=1
+Reconciling deployment go-k8s-poc/sample-app: current=1 desired=3
+Scaling deployment go-k8s-poc/sample-app: 1 -> 3
+[Informer] enqueued go-k8s-poc/sample-app
+[Worker] reconciling go-k8s-poc/sample-app attempt=1
+Reconciling deployment go-k8s-poc/sample-app: current=3 desired=3
+No scaling required
+```
+
+Final observed state:
+
+```text
+NAME         READY   UP-TO-DATE   AVAILABLE
+sample-app   3/3     3            3
+```
+
+This verifies event detection, queue processing, reconciliation, scale updates, and no-op behavior after the desired state is restored.
+
+### Troubleshooting Note
+
+During deployment, the initial Pod failed with `CreateContainerConfigError`.
+
+The kubelet reported that it could not verify the image's named `nonroot` user against `runAsNonRoot: true`.
+
+Explicitly setting `runAsUser: 65532` and `runAsGroup: 65532` in the Pod security context resolved the startup issue.
+
 ## Current Limitations
 
 - Controls one Deployment per process.
 - Watches Deployment Add events and changes to `spec.replicas`; other updates are not reconciled automatically.
 - Does not enqueue Deployment Delete events.
 - Does not perform periodic resynchronization.
-- Stops retrying a failed queue item after five retries unless a new event re-enqueues it.
-- Does not yet run as a Kubernetes Deployment.
+- After five rate-limited retries, schedules another reconciliation after 60 seconds; delayed queue entries are not persisted across restarts.
+- Runs as a Kubernetes Deployment, but automated in-cluster failure recovery tests are not yet implemented.
 - Automated tests use fake Kubernetes clients; broader integration and end-to-end tests against a real API server have not been implemented.
 
 ## Future Improvements
 
-- Deploy the controller as a Kubernetes Deployment with appropriate RBAC permissions.
+- Add automated deployment and RBAC verification.
 - Add automated integration tests against a Kubernetes API server.
-- Consider periodic resynchronization or alternative recovery behavior after retry exhaustion.
+- Consider periodic resynchronization in addition to the existing delayed retry mechanism.
 - Support additional Deployment events and multiple managed resources.
 - Remove the unused legacy `POLL_INTERVAL` configuration.

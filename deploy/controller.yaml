@@ -1,0 +1,56 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: go-k8s-controller
+  namespace: go-k8s-poc
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: go-k8s-controller
+  template:
+    metadata:
+      labels:
+        app: go-k8s-controller
+    spec:
+      serviceAccountName: go-k8s-controller
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+
+      containers:
+        - name: controller
+          image: go-k8s-controller:v0.1.0
+          imagePullPolicy: IfNotPresent
+
+          env:
+            - name: NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+
+            - name: DEPLOYMENT_NAME
+              value: "sample-app"
+
+            - name: DESIRED_REPLICAS
+              value: "3"
+
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+
+          resources:
+            requests:
+              cpu: 25m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
