@@ -270,6 +270,10 @@ The tests use fake Kubernetes clients and in-memory Workqueues to verify behavio
 
 Worker and Informer tests have also passed repeated Race Detector runs.
 
+The Informer tests use an explicit readiness channel to verify
+successful initial cache synchronization before triggering shutdown.
+This avoids relying on fixed sleep durations.
+
 ## Manual Verification
 
 The controller has been manually verified using a local Kubernetes cluster created with kind.
@@ -301,13 +305,11 @@ The expected desired replica count is 3. Pod readiness may take additional time.
 - Stops retrying a failed queue item after five retries unless a new event re-enqueues it.
 - Does not yet run as a Kubernetes Deployment.
 - Automated tests use fake Kubernetes clients; broader integration and end-to-end tests against a real API server have not been implemented.
-- The Informer shutdown test currently uses a short timing delay rather than explicit cache-sync completion signaling.
 
 ## Future Improvements
 
 - Deploy the controller as a Kubernetes Deployment with appropriate RBAC permissions.
 - Add automated integration tests against a Kubernetes API server.
-- Improve cache-sync synchronization in the Informer tests.
 - Consider periodic resynchronization or alternative recovery behavior after retry exhaustion.
 - Support additional Deployment events and multiple managed resources.
 - Remove the unused legacy `POLL_INTERVAL` configuration.

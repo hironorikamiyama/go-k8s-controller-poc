@@ -150,51 +150,54 @@ func TestWatchDeploymentInitialEventAndShutdown(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	ready := make(chan struct{})
 	done := make(chan error, 1)
 
 	go func() {
-		done <- WatchDeployment(
+		done <- watchDeployment(
 			ctx,
 			client,
 			testNamespace,
 			testDeployment,
 			queue,
+			ready,
 		)
 	}()
 
-	deadline := time.After(3 * time.Second)
-	ticker := time.NewTicker(time.Millisecond)
-	defer ticker.Stop()
+	// Wait until the initial informer cache sync is complete.
+	select {
+	case <-ready:
+		// Cache synchronization succeeded.
+	case err := <-done:
+		t.Fatalf("informer stopped before cache sync: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("timeout waiting for informer cache sync")
+	}
 
-	for queue.Len() == 0 {
-		select {
-		case err := <-done:
-			t.Fatalf("informer stopped unexpectedly: %v", err)
-		case <-deadline:
-			t.Fatal("timeout waiting for initial Add event")
-		case <-ticker.C:
-		}
+	// The initial Add event must have enqueued the target Deployment.
+	if got := queue.Len(); got != 1 {
+		t.Fatalf("queue length=%d, want=1", got)
 	}
 
 	key, shutdown := queue.Get()
 	if shutdown {
 		t.Fatal("queue unexpectedly shut down")
 	}
+
 	if key != testKey {
+		queue.Done(key)
 		t.Fatalf("key=%q, want=%q", key, testKey)
 	}
+
 	queue.Done(key)
 
-	// 初期Addイベント後、Informerのキャッシュ同期完了を待つ。
-	// この待機は簡易対策であり、同期完了を厳密に保証するものではない。
-	time.Sleep(100 * time.Millisecond)
-
+	// Shutdown must complete after cancellation.
 	cancel()
 
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("WatchDeployment returned error: %v", err)
+			t.Fatalf("watchDeployment returned error: %v", err)
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("informer did not stop after context cancellation")

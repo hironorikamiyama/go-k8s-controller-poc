@@ -20,6 +20,27 @@ func WatchDeployment(
 	deploymentName string,
 	queue workqueue.TypedInterface[string],
 ) error {
+	return watchDeployment(
+		ctx,
+		client,
+		namespace,
+		deploymentName,
+		queue,
+		nil,
+	)
+}
+
+// watchDeployment is the internal implementation.
+// ready is closed only after the initial informer cache sync succeeds.
+// A nil ready channel disables readiness notification.
+func watchDeployment(
+	ctx context.Context,
+	client kubernetes.Interface,
+	namespace string,
+	deploymentName string,
+	queue workqueue.TypedInterface[string],
+	ready chan<- struct{},
+) error {
 	factory := informers.NewSharedInformerFactoryWithOptions(
 		client,
 		0,
@@ -53,6 +74,10 @@ func WatchDeployment(
 	}
 
 	log.Printf("[Informer] watching %s/%s", namespace, deploymentName)
+
+	if ready != nil {
+		close(ready)
+	}
 
 	<-ctx.Done()
 	return nil
