@@ -463,6 +463,155 @@ The kubelet reported that it could not verify the image's named `nonroot` user a
 
 Explicitly setting `runAsUser: 65532` and `runAsGroup: 65532` in the Pod security context resolved the startup issue.
 
+## Failure Recovery Verification (Phase 5)
+
+The controller's recovery behavior was manually verified in a local
+kind Kubernetes cluster on October 14, 2026.
+
+These tests use a real Kubernetes API server rather than fake clients.
+
+### Test 1: Controller Pod Recreation
+
+The running controller Pod was deleted manually:
+
+```bash
+kubectl delete pod <controller-pod-name> -n go-k8s-poc
+```
+
+The Kubernetes Deployment recreated the Pod automatically.
+
+Observed results:
+
+- The replacement Pod reached `1/1 Running`.
+- The controller started successfully.
+- The SharedInformer enqueued `go-k8s-poc/sample-app`.
+- The Worker executed reconciliation.
+- With `current=3 desired=3`, no scale update was required.
+
+**Result: PASS**
+
+### Test 2: Recovery After Controller Downtime
+
+The controller Deployment was scaled to zero replicas.
+
+While the controller was stopped, `sample-app` was scaled
+from three replicas to one.
+
+The controller Deployment was then scaled back to one replica.
+
+Observed logs:
+
+```text
+[Informer] enqueued go-k8s-poc/sample-app
+[Worker] reconciling go-k8s-poc/sample-app attempt=1
+Reconciling deployment go-k8s-poc/sample-app: current=1 desired=3
+Scaling deployment go-k8s-poc/sample-app: 1 -> 3
+[Informer] enqueued go-k8s-poc/sample-app
+[Worker] reconciling go-k8s-poc/sample-app attempt=1
+Reconciling deployment go-k8s-poc/sample-app: current=3 desired=3
+No scaling required
+```
+
+The Deployment returned to `3/3` without manual intervention.
+
+This verifies reconciliation from the initial Informer state
+after the controller restarts.
+
+**Result: PASS**
+
+### Test 3: RBAC Permission Failure and Retry
+
+The `update` permission for `deployments/scale` was temporarily
+removed from the controller's namespace-scoped Role.
+
+The `get`, `list`, and `watch` permissions remained available.
+
+Authorization checks confirmed:
+
+```text
+update deployments.apps --subresource=scale: no
+watch deployments.apps: yes
+```
+
+After `sample-app` was scaled to one replica, the controller
+detected the change but received HTTP 403 Forbidden when
+attempting to update the scale subresource.
+
+Observed retry sequence:
+
+| Attempt | Time (UTC) | Delay from previous attempt |
+|---|---|---|
+| 1 | 06:55:18 | Initial |
+| 2 | 06:55:19 | 1 second |
+| 3 | 06:55:21 | 2 seconds |
+| 4 | 06:55:25 | 4 seconds |
+| 5 | 06:55:33 | 8 seconds |
+| 6 | 06:55:49 | 16 seconds |
+
+After attempt 6 failed, the Worker logged:
+
+```text
+[Worker] max retries exceeded: key=go-k8s-poc/sample-app; recovery scheduled after 1m0s
+```
+
+At 06:56:49 UTC, the Worker started a new retry cycle
+with `attempt=1`.
+
+This confirms exponential backoff, retry exhaustion,
+60-second delayed recovery, and retry history reset.
+
+**Result: PASS**
+
+### Test 4: Recovery After RBAC Restoration
+
+The original RBAC permissions were restored using:
+
+```bash
+kubectl apply -f deploy/rbac.yaml
+```
+
+Authorization checks confirmed that the controller's
+ServiceAccount could update `deployments/scale` again.
+
+The existing retry cycle continued without restarting
+the controller or manually changing the target Deployment.
+
+At 06:57:20 UTC, the controller successfully restored
+`sample-app` from one replica to three.
+
+The Informer detected the resulting update and the Worker
+confirmed `current=3 desired=3`, performing no additional
+scale operation.
+
+Final observed state:
+
+```text
+NAME         READY   UP-TO-DATE   AVAILABLE
+sample-app   3/3     3            3
+```
+
+**Result: PASS**
+
+### Phase 5 Summary
+
+| Test | Verification | Result |
+|---|---|---|
+| 1 | Automatic controller Pod recreation | PASS |
+| 2 | Reconciliation after controller downtime | PASS |
+| 3 | RBAC failure, exponential backoff and delayed retry | PASS |
+| 4 | Automatic recovery after RBAC restoration | PASS |
+
+### Verification Scope
+
+The failure injection used Kubernetes RBAC to trigger
+HTTP 403 Forbidden responses.
+
+These tests do not establish behavior under Kubernetes
+API server outages, network partitions, or resource exhaustion.
+
+The recovery queue is in memory; delayed entries are not
+persisted across controller restarts.
+
 ## Current Limitations
 
 - Controls one Deployment per process.
